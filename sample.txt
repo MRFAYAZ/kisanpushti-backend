@@ -1,0 +1,412 @@
+# DISABLE ALL COLAB DEBUGGER NOISE
+import sys
+import os
+os.environ['COLAB_DISABLE_DEBUGPY'] = '1'
+
+
+import warnings
+warnings.filterwarnings('ignore')
+
+
+import logging
+for logger_name in logging.root.manager.loggerDict:
+    logging.getLogger(logger_name).setLevel(logging.CRITICAL)
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
+
+# ============================================
+# COLAB BACKEND
+# ============================================
+
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+import numpy as np
+import base64
+from io import BytesIO
+from PIL import Image
+import google.generativeai as genai
+import json
+from datetime import datetime
+from google.colab import userdata
+from pyngrok import ngrok
+
+
+ngrok.set_auth_token("35F22Uxoi6Lvb0WUgrbO24SMGoD_48Xgamu7P14jGqzZq6oTq")
+
+
+app = Flask(__name__)
+CORS(app)
+
+
+# Gemini
+try:
+    GEMINI_API_KEY = userdata.get('GOOGLE_API_KEY')
+    genai.configure(api_key=GEMINI_API_KEY)
+    print("✅ Gemini API configured!")
+except:
+    GEMINI_API_KEY = None
+
+
+# Load Model
+try:
+    MODEL = load_model('model_final.h5')
+    print("✅ Model loaded!")
+    print(f"   Input shape: {MODEL.input_shape}")
+    print(f"   Output shape: {MODEL.output_shape}")
+
+
+    # Get the correct image size from model input shape
+    # Format: (None, height, width, channels)
+   # After loading your model:
+    MODEL_HEIGHT = int(MODEL.input_shape[1])  # for (None, 224, 224, 3)
+    MODEL_WIDTH = int(MODEL.input_shape[2])
+    print(f"Using image size: ({MODEL_WIDTH}, {MODEL_HEIGHT})")
+
+
+except Exception as e:
+    print(f"❌ Model error: {e}")
+    MODEL = None
+    MODEL_HEIGHT = 224
+    MODEL_WIDTH = 224
+
+
+DISEASE_CLASSES = [
+    "Apple___Apple_scab", "Apple___Black_rot", "Apple___Cedar_apple_rust", "Apple___healthy",
+    "Blueberry___healthy", "Cherry_(including_sour)___Powdery_mildew", "Cherry_(including_sour)___healthy",
+    "Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot", "Corn_(maize)___Common_rust_",
+    "Corn_(maize)___Northern_Leaf_Blight", "Corn_(maize)___healthy", "Grape___Black_rot",
+    "Grape___Esca_(Black_Measles)", "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)", "Grape___healthy",
+    "Orange___Haunglongbing_(Citrus_greening)", "Peach___Bacterial_spot", "Peach___healthy",
+    "Pepper,_bell___Bacterial_spot", "Pepper,_bell___healthy", "Potato___Early_blight",
+    "Potato___Late_blight", "Potato___healthy", "Raspberry___healthy", "Soybean___healthy",
+    "Squash___Powdery_mildew", "Strawberry___Leaf_scorch", "Strawberry___healthy",
+    "Tomato___Bacterial_spot", "Tomato___Early_blight", "Tomato___Late_blight",
+    "Tomato___Leaf_Mold", "Tomato___Septoria_leaf_spot", "Tomato___Spider_mites Two-spotted_spider_mite",
+    "Tomato___Target_Spot", "Tomato___Tomato_Yellow_Leaf_Curl_Virus", "Tomato___Tomato_mosaic_virus", "Tomato___healthy"
+]
+
+
+NATIONAL_FARMER_PROBLEM_SOLVER_PROMPT = """
+You are Dr. Krishnan, a Senior Agricultural Scientist certified by ICAR (Indian Council of Agricultural Research) with 25+ years of field experience across all Indian states and districts.
+Your mission: Generate a COMPLETE, ACTIONABLE disease report that solves the farmer's problem with ZERO ambiguity, in their native language.
+
+
+=== RULES ===
+1. Generate EVERYTHING in FARMER_LANG (no English text except scientific names)
+2. Use ONLY ICAR-approved, field-tested remedies (never just general advice)
+3. Include a working YouTube tutorial link for each remedy
+4. Include a Google Maps search link for nearby agricultural shops selling the materials
+5. Calculate treatment ROI for the farmer, compare costs and savings
+6. List government schemes & insurance (PMFBY, PKVY, etc.) available in DISTRICT
+7. Include traditional organic options (neem, panchgavya, garlic paste), as well as modern treatments
+8. All instructions simple enough for a 5th-grade-educated farmer
+
+
+=== INPUTS ===
+- Disease: DISEASE_CLASS
+- Crop: CROP_NAME
+- Confidence: CONFIDENCE_PERCENT%
+- Farmer's Language: FARMER_LANG
+- Location: DISTRICT, STATE
+- Date: TODAY_DATE
+- Season: CURRENT_SEASON
+
+
+=== OUTPUT JSON STRUCTURE ===
+{
+  "report_metadata": {
+    "report_id": "ICAR_DISEASE_TIMESTAMP",
+    "generated_date": "TODAY_DATE",
+    "farmer_language": "FARMER_LANG",
+    "location": {
+      "district": "DISTRICT",
+      "state": "STATE"
+    },
+    "certification": "ICAR-Certified AI Diagnosis Report",
+    "validity_days": 90,
+    "model_confidence": CONFIDENCE_PERCENT
+  },
+  "disease_diagnosis": {
+    "disease_name_local": "Name of disease in FARMER_LANG",
+    "disease_name_english": "English disease name",
+    "disease_name_scientific": "Binomial name",
+    "crop_affected": "CROP_NAME in FARMER_LANG",
+    "causal_agent": "FUNGAL/BACTERIAL/VIRAL/NEMATODE - in FARMER_LANG",
+    "identification_confidence": "HIGH",
+    "common_names_in_region": ["Local name 1", "Local name 2"]
+  },
+  "why_this_disease_appeared": {
+    "primary_reason_local": "2-3 lines in FARMER_LANG why disease struck, with region- and season-specific factors.",
+    "weather_conditions": {
+      "temperature_range": "°C",
+      "humidity_level": "High/Medium/Low",
+      "rainfall_pattern": "In FARMER_LANG"
+    },
+    "bad_practices": ["Example practice 1 in FARMER_LANG", "Example practice 2"]
+  },
+  "severity_assessment": {
+    "current_stage": "EARLY/MODERATE/SEVERE",
+    "percentage_crop_affected": "15",
+    "visual_symptoms": ["Symptom 1", "Symptom 2"],
+    "spread_rate": "SLOW/MODERATE/FAST",
+    "days_until_major_loss": "7",
+    "urgent_action_needed": "YES/NO"
+  },
+  "economic_impact_analysis": {
+    "potential_loss_if_untreated": {
+      "amount_rupees": "₹150000",
+      "loss_percentage": "25",
+      "timeline_days": 7,
+      "explanation_local": "Explanation in FARMER_LANG"
+    },
+    "treatment_cost_vs_savings": {
+      "cheapest_treatment_cost": "₹300",
+      "moderate_treatment_cost": "₹800",
+      "premium_treatment_cost": "₹2000",
+      "savings_if_treated_early": "₹149700"
+    }
+  },
+  "remedy_recommendations": [
+    {
+      "rank": 1,
+      "remedy_name_local": "Name in FARMER_LANG",
+      "remedy_type": "TRADITIONAL_ORGANIC",
+      "icar_approved": true,
+      "total_cost_rupees": 300,
+      "step_by_step_application": [
+        "Step 1 in FARMER_LANG",
+        "Step 2..."
+      ],
+      "youtube_tutorial": "https://youtube.com/results?search_query=REMEDY_NAME+in+FARMER_LANG",
+      "maps_search_link": "https://www.google.com/maps/search/pesticide+shop+near+DISTRICT+STATE",
+      "roi_percent": 49900
+    },
+    {
+      "rank": 2,
+      "remedy_name_local": "Name in FARMER_LANG",
+      "remedy_type": "MODERN_ORGANIC",
+      "icar_approved": true,
+      "total_cost_rupees": 600,
+      "youtube_tutorial": "https://youtube.com/results?search_query=REMEDY_NAME+in+FARMER_LANG",
+      "maps_search_link": "https://www.google.com/maps/search/pesticide+shop+near+DISTRICT+STATE",
+      "roi_percent": 24500
+    },
+    {
+      "rank": 3,
+      "remedy_name_local": "Name in FARMER_LANG",
+      "remedy_type": "CHEMICAL",
+      "icar_approved": true,
+      "total_cost_rupees": 1200,
+      "youtube_tutorial": "https://youtube.com/results?search_query=REMEDY_NAME+in+FARMER_LANG",
+      "maps_search_link": "https://www.google.com/maps/search/pesticide+shop+near+DISTRICT+STATE",
+      "roi_percent": 12500
+    }
+  ],
+  "government_schemes": [
+    {
+      "scheme_name": "Pradhan Mantri Fasal Bima Yojana (PMFBY)",
+      "in_local_language": "Name in FARMER_LANG",
+      "eligible": "YES/NO",
+      "how_to_apply": "Application steps in FARMER_LANG",
+      "benefit_amount": "90% insured sum",
+      "helpline": "18001801551"
+    }
+    // ... add more schemes as needed ...
+  ],
+  "nearby_resources": {
+    "agricultural_shops_map_link": "https://www.google.com/maps/search/agricultural+pesticide+shop+near+DISTRICT+STATE"
+  },
+  "ai_disclaimer": {
+    "message_local": "This is AI-powered diagnosis. For confirmation, visit KVK (message in FARMER_LANG)"
+  }
+}
+
+
+=== LANGUAGE EXAMPLES ===
+- Remedies, steps, and all instructions should be 100% in FARMER_LANG for Hindi/Tamil/etc.
+- YouTube links: "https://youtube.com/results?search_query=neem+spray+application+in+FARMER_LANG"
+- Maps links: "https://www.google.com/maps/search/agricultural+pesticide+shop+near+DISTRICT+STATE"
+
+
+DISEASE: DISEASE_CLASS
+CROP: CROP_NAME
+CONFIDENCE: CONFIDENCE_PERCENT%
+LANGUAGE: FARMER_LANG
+DISTRICT: DISTRICT
+STATE: STATE
+SEASON: CURRENT_SEASON
+DATE: TODAY_DATE
+
+
+Generate only valid JSON. Do not return any markdown or explanation.
+"""
+
+
+def generate_gemini_report(disease_class, confidence, district, state, language='en'):
+    from datetime import datetime
+    try:
+        # Safe string conversion
+        if isinstance(disease_class, list):
+            disease_class = str(disease_class[0]) if disease_class else "Unknown"
+        disease_class = str(disease_class).strip()
+        if '___' in disease_class:
+            parts = disease_class.split('___')
+            crop_name = parts[0].strip()
+        else:
+            crop_name = "Crop"
+
+
+        # Get season
+        month = datetime.now().month
+        if month in [6, 7, 8, 9]:
+            season = "Kharif"
+        elif month in [10, 11, 12, 1]:
+            season = "Rabi"
+        else:
+            season = "Summer"
+
+
+        prompt = NATIONAL_FARMER_PROBLEM_SOLVER_PROMPT
+        prompt = prompt.replace("DISEASE_CLASS", disease_class)
+        prompt = prompt.replace("CROP_NAME", crop_name)
+        prompt = prompt.replace("CONFIDENCE_PERCENT", str(int(confidence * 100)))
+        prompt = prompt.replace("FARMER_LANG", language.lower())
+        prompt = prompt.replace("DISTRICT", district)
+        prompt = prompt.replace("STATE", state)
+        prompt = prompt.replace("CURRENT_SEASON", season)
+        prompt = prompt.replace("TODAY_DATE", datetime.now().strftime('%Y-%m-%d'))
+        prompt = prompt.replace("TIMESTAMP", str(int(datetime.now().timestamp())))
+
+
+        # Gemini API call
+        model = genai.GenerativeModel(
+            'gemini-2.5-flash',
+            generation_config={
+                'temperature': 0.3,
+                'max_output_tokens': 8192
+            }
+        )
+        response = model.generate_content(prompt)
+        response_text = response.text
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        if json_start == -1 or json_end <= json_start:
+            print("❌ No JSON in response")
+            return None
+        json_str = response_text[json_start:json_end]
+        report = json.loads(json_str)
+        print("✅ Comprehensive report generated!")
+        return report
+
+
+    except Exception as e:
+        print(f"❌ Gemini error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'healthy', 'model': 'loaded' if MODEL else 'failed'})
+
+
+@app.route('/api/predict', methods=['POST', 'OPTIONS'])
+def predict():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+
+    try:
+        print("\n📨 Request received")
+        data = request.get_json()
+
+
+        if not data or not data.get('image'):
+            return jsonify({'success': False, 'error': 'No image'}), 400
+
+
+        if not MODEL:
+            return jsonify({'success': False, 'error': 'Model not loaded'}), 500
+
+
+        # Decode image
+        print("🔄 Decoding image...")
+        image_data = base64.b64decode(data['image'])
+        img = Image.open(BytesIO(image_data)).convert('RGB')
+        img = img.resize((MODEL_WIDTH, MODEL_HEIGHT))
+        print(f"📐 Resized to: {MODEL_WIDTH}x{MODEL_HEIGHT}")
+
+
+        img_array = image.img_to_array(img) / 255.0
+        print(f"✅ Image array shape: {img_array.shape}")
+        img_batch = np.expand_dims(img_array, axis=0)
+        print(f"✅ Batch shape: {img_batch.shape}")
+
+
+        print("🤖 Running prediction...")
+        predictions = MODEL.predict(img_batch, verbose=0)
+        print(f"✅ Predictions shape: {predictions.shape}")
+        print(f"✅ Predictions: {predictions}")
+
+
+        prediction_probs = predictions[0]   # <--- KEY FIX
+        top_index = np.argmax(prediction_probs)
+        confidence = float(prediction_probs[top_index])   # <--- KEY FIX
+        disease_name = str(DISEASE_CLASSES[top_index])
+
+
+        print(f"✅ Disease: {disease_name} ({confidence*100:.1f}%)")
+
+
+        # ... generate report and return as before ...
+
+
+
+        # Get parameters
+        language = data.get('language', 'en').lower()
+        district = data.get('district', 'Unknown')
+        state = data.get('state', 'Unknown')
+
+
+        print(f"🌍 Language: {language}, Location: {district}, {state}")
+
+
+        # Generate report
+        report = generate_gemini_report(disease_name, confidence, district, state, language)
+
+
+        return jsonify({
+            'success': True,
+            'disease_class': disease_name,
+            'confidence': confidence,
+            'language_generated': language,
+            'report': report
+        })
+
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# RUN
+# ============================================
+
+
+print("\n" + "="*70)
+public_url = ngrok.connect(5000)
+print(f"✅ Backend URL: {public_url}")
+print(f"✅ API: {public_url}/api/predict")
+print("="*70 + "\n")
+
+
+app.run(debug=False, port=5000)
