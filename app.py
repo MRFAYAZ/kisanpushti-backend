@@ -1,6 +1,20 @@
 import sys
 import os
 
+MODEL_URL = 'https://drive.google.com/uc?export=download&id=1ETSDbzvx4FZjX8eKpighI6rrfbQtM-_4'  # e.g., https://drive.google.com/uc?export=download&id=YOUR_FILE_ID
+
+def download_model_if_needed():
+    if not os.path.exists('model_final.h5'):
+        print("⏬ Downloading model_final.h5 ...")
+        with requests.get(MODEL_URL, stream=True) as r:
+            r.raise_for_status()
+            with open('model_final.h5', 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        print("✅ model_final.h5 downloaded.")
+
+download_model_if_needed()
+
 import warnings
 warnings.filterwarnings('ignore')
 
