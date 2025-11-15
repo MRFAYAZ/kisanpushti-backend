@@ -896,7 +896,7 @@ IMPORTANT:
 
 @app.route('/api/market-prices-history', methods=['POST', 'OPTIONS'])
 def get_market_prices_history():
-    """Get 7-day price history - Real data from Gemini"""
+    """Get 7-day price history - Robust Gemini + Fallback"""
     if request.method == 'OPTIONS':
         return '', 204
 
@@ -919,79 +919,21 @@ def get_market_prices_history():
         date_strings = [d.strftime('%Y-%m-%d') for d in dates]
 
         prompt = f"""You are an agricultural economist with expertise in Indian commodity markets.
-
 Generate REALISTIC 7-day price history for {commodity} in {district}, {state} ending on {end_date}.
-
-CRITICAL INSTRUCTIONS:
-1. Return ONLY valid JSON (no markdown, no code blocks, no extra text)
-2. All price values MUST be actual numbers (e.g., 2500, 3200), NOT text descriptions
-3. Use realistic prices for {commodity} in India (in ₹ per quintal)
-4. Calculate actual percentage changes between consecutive days
-5. Daily price changes should be realistic (-3% to +3%)
-
-Return this EXACT JSON structure with REAL NUMBERS:
-
+Return ONLY valid JSON (NO markdown, NO code blocks, NO extra text).
+Use realistic prices for {commodity} in India (₹ per quintal). Calculate actual percentage changes day to day.
+Return this structure:
 {{
   "commodity": "{commodity}",
   "district": "{district}",
   "state": "{state}",
-  "history": [
-    {{
-      "date": "{date_strings[0]}",
-      "price": 2500,
-      "trend": "STABLE",
-      "change_percent": 0.0
-    }},
-    {{
-      "date": "{date_strings[1]}",
-      "price": 2537,
-      "trend": "UP",
-      "change_percent": 1.48
-    }},
-    {{
-      "date": "{date_strings[2]}",
-      "price": 2512,
-      "trend": "DOWN",
-      "change_percent": -0.99
-    }},
-    {{
-      "date": "{date_strings[3]}",
-      "price": 2525,
-      "trend": "UP",
-      "change_percent": 0.52
-    }},
-    {{
-      "date": "{date_strings[4]}",
-      "price": 2545,
-      "trend": "UP",
-      "change_percent": 0.79
-    }},
-    {{
-      "date": "{date_strings[5]}",
-      "price": 2530,
-      "trend": "DOWN",
-      "change_percent": -0.59
-    }},
-    {{
-      "date": "{date_strings[6]}",
-      "price": 2520,
-      "trend": "DOWN",
-      "change_percent": -0.40
-    }}
-  ],
-  "average_price": 2524,
-  "highest_price": 2545,
-  "lowest_price": 2500,
-  "overall_trend": "UP",
-  "analysis": "Market for {commodity} in {district} shows stable to slightly upward trend over the 7-day period ending {end_date}."
+  "history": [...],
+  "average_price": ...,
+  "highest_price": ...,
+  "lowest_price": ...,
+  "overall_trend": ...,
+  "analysis": "..."
 }}
-
-IMPORTANT:
-- Use the ABOVE EXAMPLE as a template but adjust prices to be realistic for {commodity}
-- All "price", "average_price", "highest_price", "lowest_price" must be INTEGER NUMBERS
-- All "change_percent" must be DECIMAL NUMBERS (e.g., 1.48, -0.99, 0.0)
-- First day MUST have change_percent of 0.0
-- Calculate each day's change_percent as: ((current_price - previous_price) / previous_price) * 100
 """
 
         logger.info(f'📤 Calling Gemini for {commodity} price history...')
@@ -999,45 +941,49 @@ IMPORTANT:
         response = model.generate_content(prompt)
         response_text = response.text.strip()
 
-        # Clean markdown if present
-        if response_text.startswith('```'):
-            lines = response_text.split('\n')
-            response_text = '\n'.join(lines[1:-1]) if len(lines) > 2 else response_text
-            if response_text.startswith('json'):
-                response_text = response_text[4:].strip()
-
-        # Extract JSON
+        # Clean markdown/code fencing if present
+        if response_text.startswith('```
+            response_text = response_text.strip('`').replace('json', '').strip()
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            json_str = response_text[json_start:json_end]
-        else:
-            json_str = response_text
+        json_str = response_text[json_start:json_end] if json_start >= 0 else response_text
 
+        # Parse and robustly extract price list
         history = json.loads(json_str)
+        history_list = history.get('history', [])
+        prices = []
 
-        # Validate that we have actual price numbers
-       # Handle if history is a list
-        if isinstance(history['history'], list):
-            if len(history['history']) > 0:
-                first_price = history['history'][0].get('price') if isinstance(history['history'][0], dict) else history['history'][0]
-            else:
-                first_price = None
-        elif isinstance(history['history'], dict):
-            first_price = history['history'].get('price')
-        else:
-            first_price = None
+        if isinstance(history_list, dict):
+            history_list = [history_list]
+        for item in history_list:
+            if isinstance(item, dict):
+                price = item.get('price')
+                try:
+                    price = int(price)
+                except Exception:
+                    price = None
+                prices.append(price)
+            elif isinstance(item, (int, float)):
+                prices.append(item)
+        if not prices:
+            prices = 
+        first_price = prices
+        last_price = prices[-1]
+        price_diff = ((last_price - first_price) / first_price) * 100 if first_price else 0.0
+        overall_trend = determine_trend(price_diff)
 
-
-        print(f"✅ Generated {len(history.get('history', []))} days of history")
+        print(f"✅ Generated {len(history_list)} days of history")
         print(f"📊 Price range: ₹{history.get('lowest_price')} - ₹{history.get('highest_price')}")
-
         return jsonify({
             'success': True,
             'data': history,
+            'first_price': first_price,
+            'last_price': last_price,
+            'price_diff_percent': round(price_diff, 2),
+            'overall_trend': overall_trend,
             'source': '✅ Gemini AI (Verified)',
-            'count': len(history.get('history', [])),
-            'date_range': f"{date_strings} to {date_strings[-1]}"  # ✅ FIXED TYPO
+            'count': len(history_list),
+            'date_range': f"{date_strings} to {date_strings[-1]}"
         }), 200
 
     except Exception as e:
@@ -1048,7 +994,6 @@ IMPORTANT:
         # Fallback with actual calculated numbers
         dates = calculate_date_range(datetime.now().date())
         date_strings = [d.strftime('%Y-%m-%d') for d in dates]
-
         fallback_history = []
         base_price = 2500
 
@@ -1057,43 +1002,38 @@ IMPORTANT:
                 price = base_price
                 change = 0.0
             else:
-                # Realistic variation
-                variation = (i % 3 - 1) * 0.01  # -1%, 0%, +1%
+                variation = ((i % 3) - 1) * 0.01  # -1%, 0%, +1%
                 price = int(fallback_history[i-1]['price'] * (1 + variation))
                 prev_price = fallback_history[i-1]['price']
                 change = round(((price - prev_price) / prev_price) * 100, 2)
-
             trend = determine_trend(change)
-
             fallback_history.append({
                 "date": date_str,
                 "price": price,
                 "trend": trend,
                 "change_percent": change
             })
-
         prices = [h['price'] for h in fallback_history]
-
+        price_diff = ((prices[-1] - prices) / prices) * 100 if prices else 0.0
+        overall_trend = determine_trend(price_diff)
         fallback_data = {
             "commodity": commodity,
             "district": district,
             "state": state,
             "history": fallback_history,
-            "average_price": int(sum(prices) / len(prices)),
-            "highest_price": max(prices),
-            "lowest_price": min(prices),
-            # Ensure prices is a list of numbers
-            if prices and len(prices) > 0:
-                price_diff = ((prices[-1] - prices[0]) / prices[0]) * 100
-                overall_trend = determine_trend([price_diff])
-            else:
-                overall_trend = "stable"
+            "average_price": int(sum(prices) / len(prices)) if prices else 0,
+            "highest_price": max(prices) if prices else 0,
+            "lowest_price": min(prices) if prices else 0,
+            "overall_trend": overall_trend,
             "analysis": f"Market data for {commodity} in {district} (fallback mode)."
         }
-
         return jsonify({
             'success': True,
             'data': fallback_data,
+            'first_price': prices,
+            'last_price': prices[-1],
+            'price_diff_percent': round(price_diff, 2),
+            'overall_trend': overall_trend,
             'source': '⚠️ Fallback (Calculated)',
             'count': len(fallback_history),
             'date_range': f"{date_strings} to {date_strings[-1]}",
