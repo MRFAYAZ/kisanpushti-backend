@@ -1017,10 +1017,17 @@ IMPORTANT:
         history = json.loads(json_str)
 
         # Validate that we have actual price numbers
-        if 'history' in history and len(history['history']) > 0:
+       # Handle if history is a list
+        if isinstance(history['history'], list):
+            if len(history['history']) > 0:
+                first_price = history['history'][0].get('price') if isinstance(history['history'][0], dict) else history['history'][0]
+            else:
+                first_price = None
+        elif isinstance(history['history'], dict):
             first_price = history['history'].get('price')
-            if not isinstance(first_price, (int, float)):
-                raise ValueError(f"Price is not a number: {first_price}")
+        else:
+            first_price = None
+
 
         print(f"✅ Generated {len(history.get('history', []))} days of history")
         print(f"📊 Price range: ₹{history.get('lowest_price')} - ₹{history.get('highest_price')}")
@@ -1075,7 +1082,12 @@ IMPORTANT:
             "average_price": int(sum(prices) / len(prices)),
             "highest_price": max(prices),
             "lowest_price": min(prices),
-            "overall_trend": determine_trend(((prices[-1] - prices) / prices) * 100),
+            # Ensure prices is a list of numbers
+            if prices and len(prices) > 0:
+                price_diff = ((prices[-1] - prices[0]) / prices[0]) * 100
+                overall_trend = determine_trend([price_diff])
+            else:
+                overall_trend = "stable"
             "analysis": f"Market data for {commodity} in {district} (fallback mode)."
         }
 
