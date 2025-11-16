@@ -942,7 +942,7 @@ Return this structure:
         response_text = response.text.strip()
 
         # Clean markdown/code fencing if present
-        if response_text.startswith('```
+        if response_text.startswith('```'):
             response_text = response_text.strip('`').replace('json', '').strip()
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
@@ -966,8 +966,8 @@ Return this structure:
             elif isinstance(item, (int, float)):
                 prices.append(item)
         if not prices:
-            prices = 
-        first_price = prices
+            prices = [2500]
+        first_price = prices[0]
         last_price = prices[-1]
         price_diff = ((last_price - first_price) / first_price) * 100 if first_price else 0.0
         overall_trend = determine_trend(price_diff)
